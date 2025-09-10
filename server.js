@@ -20,7 +20,13 @@ const supabase = createClient(
 
 // ========== MIDDLEWARE SETUP ==========
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://onremote-attendance.netlify.app/',  // Replace with your actual Netlify URL
+  ],
+  credentials: true
+}));;
 app.use(express.json());
 app.use(express.static('public'));
 
