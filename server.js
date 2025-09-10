@@ -28,7 +28,6 @@ app.use(cors({
   credentials: true
 }));;
 app.use(express.json());
-app.use(express.static('public'));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -447,10 +446,6 @@ app.get('/attendance/:id', authenticateToken, async (req, res) => {
 });
 
 // ========== STATIC FILES & ROUTES ==========
-// Serve main page
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
 
 // Health check
 app.get('/health', (req, res) => {
