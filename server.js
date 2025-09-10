@@ -20,13 +20,21 @@ const supabase = createClient(
 
 // ========== MIDDLEWARE SETUP ==========
 app.use(helmet());
+
+// FIXED: Removed trailing slash and added more origins
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://onremote-attendance.netlify.app/',  // Replace with your actual Netlify URL
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
+    'https://onremote-attendance.netlify.app', // Fixed: removed trailing slash
+    'https://onremote-attendance.netlify.app/'  // Keep both just in case
   ],
-  credentials: true
-}));;
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+}));
+
 app.use(express.json());
 
 // Rate limiting
@@ -79,12 +87,12 @@ const authenticateToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
+    return res.status(401).json({ success: false, error: 'Access token required' });
   }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
+      return res.status(403).json({ success: false, error: 'Invalid or expired token' });
     }
     req.user = user;
     next();
@@ -93,7 +101,7 @@ const authenticateToken = (req, res, next) => {
 
 const authenticateAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ success: false, error: 'Admin access required' });
   }
   next();
 };
@@ -114,6 +122,18 @@ async function logAdminAction(adminId, action, details) {
   }
 }
 
+// ========== NEW: OFFICE SETTINGS ENDPOINT ==========
+app.get('/settings/office', authenticateToken, (req, res) => {
+  res.json({
+    success: true,
+    settings: {
+      latitude: parseFloat(process.env.OFFICE_LATITUDE),
+      longitude: parseFloat(process.env.OFFICE_LONGITUDE),
+      radius: parseFloat(process.env.OFFICE_RADIUS)
+    }
+  });
+});
+
 // ========== ADMIN ROUTES ==========
 // Admin login
 app.post('/admin/login', async (req, res) => {
@@ -121,7 +141,7 @@ app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password required' });
+      return res.status(400).json({ success: false, error: 'Username and password required' });
     }
 
     const { data: admin, error } = await supabase
@@ -131,12 +151,12 @@ app.post('/admin/login', async (req, res) => {
       .single();
 
     if (error || !admin) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const validPassword = await bcrypt.compare(password, admin.password_hash);
     if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const token = generateToken({
@@ -155,7 +175,7 @@ app.post('/admin/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Admin login error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -172,7 +192,7 @@ app.get('/employees', authenticateToken, authenticateAdmin, async (req, res) => 
     res.json({ success: true, employees });
   } catch (error) {
     console.error('Get employees error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -182,11 +202,11 @@ app.post('/employees', authenticateToken, authenticateAdmin, async (req, res) =>
     const { name, email, password, role } = req.body;
 
     if (!name || !email || !password || !role) {
-      return res.status(400).json({ error: 'All fields required' });
+      return res.status(400).json({ success: false, error: 'All fields required' });
     }
 
     if (!['office_only', 'flexible'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' });
+      return res.status(400).json({ success: false, error: 'Invalid role' });
     }
 
     // Check if employee exists
@@ -197,7 +217,7 @@ app.post('/employees', authenticateToken, authenticateAdmin, async (req, res) =>
       .single();
 
     if (existing) {
-      return res.status(400).json({ error: 'Employee already exists' });
+      return res.status(400).json({ success: false, error: 'Employee already exists' });
     }
 
     const passwordHash = await hashPassword(password);
@@ -234,7 +254,7 @@ app.post('/employees', authenticateToken, authenticateAdmin, async (req, res) =>
     });
   } catch (error) {
     console.error('Add employee error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -276,7 +296,7 @@ app.put('/employees/:id', authenticateToken, authenticateAdmin, async (req, res)
     });
   } catch (error) {
     console.error('Update employee error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -297,10 +317,41 @@ app.delete('/employees/:id', authenticateToken, authenticateAdmin, async (req, r
       employee_id: id
     });
 
-    res.json({ success: true, message: 'Employee deleted' });
+    res.json({ success: true, message: 'Employee deleted successfully' });
   } catch (error) {
     console.error('Delete employee error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// ========== NEW: GET ALL ATTENDANCE FOR ADMIN ==========
+app.get('/admin/attendance', authenticateToken, authenticateAdmin, async (req, res) => {
+  try {
+    const { data: attendance, error } = await supabase
+      .from('attendance')
+      .select(`
+        *,
+        employees (
+          name,
+          email
+        )
+      `)
+      .order('timestamp', { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+
+    // Format the response to match frontend expectations
+    const formattedAttendance = attendance.map(record => ({
+      ...record,
+      employee_name: record.employees?.name,
+      email: record.employees?.email
+    }));
+
+    res.json({ success: true, attendance: formattedAttendance });
+  } catch (error) {
+    console.error('Get all attendance error:', error);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -311,7 +362,7 @@ app.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+      return res.status(400).json({ success: false, error: 'Email and password required' });
     }
 
     const { data: employee, error } = await supabase
@@ -321,12 +372,12 @@ app.post('/auth/login', async (req, res) => {
       .single();
 
     if (error || !employee) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const validPassword = await bcrypt.compare(password, employee.password_hash);
     if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const token = generateToken({
@@ -347,7 +398,7 @@ app.post('/auth/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Employee login error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -358,11 +409,11 @@ app.post('/attendance/punch', authenticateToken, async (req, res) => {
     const { latitude, longitude, type } = req.body;
 
     if (!latitude || !longitude || !type) {
-      return res.status(400).json({ error: 'Location and punch type required' });
+      return res.status(400).json({ success: false, error: 'Location and punch type required' });
     }
 
     if (!['in', 'out'].includes(type)) {
-      return res.status(400).json({ error: 'Invalid punch type' });
+      return res.status(400).json({ success: false, error: 'Invalid punch type' });
     }
 
     // Get employee details
@@ -373,16 +424,17 @@ app.post('/attendance/punch', authenticateToken, async (req, res) => {
       .single();
 
     if (empError || !employee) {
-      return res.status(404).json({ error: 'Employee not found' });
+      return res.status(404).json({ success: false, error: 'Employee not found' });
     }
 
     // Check geofence for office_only employees
-    let status = 'valid';
+    let status = 'Present';
     const withinOffice = isWithinOffice(latitude, longitude);
 
     if (employee.role === 'office_only' && !withinOffice) {
-      status = 'invalid_location';
+      status = 'Outside Office';
       return res.status(400).json({ 
+        success: false,
         error: 'You must be within office premises to punch in/out',
         withinOffice: false
       });
@@ -406,6 +458,7 @@ app.post('/attendance/punch', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
+      message: `Successfully punched ${type}!`,
       attendance: {
         id: attendance.id,
         type: attendance.type,
@@ -416,7 +469,7 @@ app.post('/attendance/punch', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Punch error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -427,7 +480,7 @@ app.get('/attendance/:id', authenticateToken, async (req, res) => {
 
     // Employees can only view their own records
     if (req.user.role !== 'admin' && req.user.id !== parseInt(id)) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
     const { data: attendance, error } = await supabase
@@ -441,7 +494,7 @@ app.get('/attendance/:id', authenticateToken, async (req, res) => {
     res.json({ success: true, attendance });
   } catch (error) {
     console.error('Get attendance error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 });
 
@@ -458,12 +511,12 @@ app.get('/health', (req, res) => {
 
 // ========== ERROR HANDLING ==========
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  res.status(404).json({ success: false, error: 'Route not found' });
 });
 
 app.use((error, req, res, next) => {
   console.error('Server error:', error);
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 // ========== SERVER START ==========
