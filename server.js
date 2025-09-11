@@ -12,6 +12,10 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Generate random admin panel endpoint (changes on each restart for security)
+const ADMIN_PANEL_ID = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+console.log(`🔒 Admin panel endpoint: /admin-panel-${ADMIN_PANEL_ID}`);
+
 // ========== SUPABASE CLIENT SETUP ==========
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -144,11 +148,12 @@ app.get("/", (req, res) => {
       health: "/health",
       admin: {
         login: "POST /admin/login",
-        employees: "GET /employees",
-        addEmployee: "POST /employees",
-        updateEmployee: "PUT /employees/:id",
-        deleteEmployee: "DELETE /employees/:id",
-        allAttendance: "GET /admin/attendance",
+        employees: "GET /employees-public",
+        addEmployee: "POST /employees-public",
+        updateEmployee: "PUT /employees-public/:id",
+        deleteEmployee: "DELETE /employees-public/:id",
+        allAttendance: "GET /attendance-public",
+        panel: `/admin-panel-${ADMIN_PANEL_ID}`,
       },
       employee: {
         login: "POST /auth/login",
@@ -172,6 +177,23 @@ app.get("/health", (req, res) => {
   });
 });
 
+// ========== SECURE ADMIN PANEL ENDPOINT ==========
+app.get(`/admin-panel-${ADMIN_PANEL_ID}`, (req, res) => {
+  res.json({
+    success: true,
+    message: "Admin panel access granted",
+    adminPanelId: ADMIN_PANEL_ID,
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      employees: "/employees-public",
+      attendance: "/attendance-public",
+      addEmployee: "POST /employees-public",
+      updateEmployee: "PUT /employees-public/:id",
+      deleteEmployee: "DELETE /employees-public/:id"
+    }
+  });
+});
+
 // ========== OFFICE SETTINGS ENDPOINT ==========
 app.get("/settings/office", authenticateToken, (req, res) => {
   res.json({
@@ -184,7 +206,169 @@ app.get("/settings/office", authenticateToken, (req, res) => {
   });
 });
 
-// ========== ADMIN ROUTES ==========
+// ========== PUBLIC ADMIN ROUTES (NO AUTHENTICATION) ==========
+// Get all employees (Public for admin panel)
+app.get("/employees-public", async (req, res) => {
+  try {
+    const { data: employees, error } = await supabase
+      .from("employees")
+      .select("id, name, email, role, created_at")
+      .order("name");
+
+    if (error) throw error;
+    res.json({ success: true, employees });
+  } catch (error) {
+    console.error("Get employees error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Add employee (Public for admin panel)
+app.post("/employees-public", async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+
+    if (!name || !email || !password || !role) {
+      return res
+        .status(400)
+        .json({ success: false, error: "All fields required" });
+    }
+
+    if (!["office_only", "flexible"].includes(role)) {
+      return res.status(400).json({ success: false, error: "Invalid role" });
+    }
+
+    // Check if employee exists
+    const { data: existing } = await supabase
+      .from("employees")
+      .select("email")
+      .eq("email", email)
+      .single();
+
+    if (existing) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Employee already exists" });
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    const { data: employee, error } = await supabase
+      .from("employees")
+      .insert([
+        {
+          name,
+          email,
+          password_hash: passwordHash,
+          role,
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      employee: {
+        id: employee.id,
+        name: employee.name,
+        email: employee.email,
+        role: employee.role,
+      },
+    });
+  } catch (error) {
+    console.error("Add employee error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Update employee (Public for admin panel)
+app.put("/employees-public/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, email, role, password } = req.body;
+
+    const updates = {};
+    if (name) updates.name = name;
+    if (email) updates.email = email;
+    if (role && ["office_only", "flexible"].includes(role)) updates.role = role;
+    if (password) updates.password_hash = await hashPassword(password);
+
+    const { data: employee, error } = await supabase
+      .from("employees")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      employee: {
+        id: employee.id,
+        name: employee.name,
+        email: employee.email,
+        role: employee.role,
+      },
+    });
+  } catch (error) {
+    console.error("Update employee error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Delete employee (Public for admin panel)
+app.delete("/employees-public/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase.from("employees").delete().eq("id", id);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: "Employee deleted successfully" });
+  } catch (error) {
+    console.error("Delete employee error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Get all attendance (Public for admin panel)
+app.get("/attendance-public", async (req, res) => {
+  try {
+    const { data: attendance, error } = await supabase
+      .from("attendance")
+      .select(
+        `
+        *,
+        employees (
+          name,
+          email
+        )
+      `
+      )
+      .order("timestamp", { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+
+    // Format the response to match frontend expectations
+    const formattedAttendance = attendance.map((record) => ({
+      ...record,
+      employee_name: record.employees?.name,
+      email: record.employees?.email,
+    }));
+
+    res.json({ success: true, attendance: formattedAttendance });
+  } catch (error) {
+    console.error("Get all attendance error:", error);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ========== ORIGINAL ADMIN ROUTES (WITH AUTHENTICATION) ==========
 // Admin login
 app.post("/admin/login", async (req, res) => {
   try {
@@ -235,7 +419,7 @@ app.post("/admin/login", async (req, res) => {
   }
 });
 
-// Get all employees (Admin only)
+// Get all employees (Admin only - with auth)
 app.get(
   "/employees",
   authenticateToken,
@@ -257,7 +441,7 @@ app.get(
   }
 );
 
-// Add employee (Admin only)
+// Add employee (Admin only - with auth)
 app.post(
   "/employees",
   authenticateToken,
@@ -330,7 +514,7 @@ app.post(
   }
 );
 
-// Update employee (Admin only)
+// Update employee (Admin only - with auth)
 app.put(
   "/employees/:id",
   authenticateToken,
@@ -378,7 +562,7 @@ app.put(
   }
 );
 
-// Delete employee (Admin only)
+// Delete employee (Admin only - with auth)
 app.delete(
   "/employees/:id",
   authenticateToken,
@@ -404,7 +588,7 @@ app.delete(
   }
 );
 
-// Get all attendance for admin
+// Get all attendance for admin (with auth)
 app.get(
   "/admin/attendance",
   authenticateToken,
@@ -616,11 +800,11 @@ app.use((req, res) => {
       "GET /settings/office",
       "POST /attendance/punch",
       "GET /attendance/:id",
-      "GET /employees",
-      "POST /employees",
-      "PUT /employees/:id",
-      "DELETE /employees/:id",
-      "GET /admin/attendance",
+      "GET /employees-public",
+      "POST /employees-public",
+      "PUT /employees-public/:id",
+      "DELETE /employees-public/:id",
+      "GET /attendance-public",
     ],
   });
 });
@@ -639,5 +823,5 @@ app.listen(PORT, "0.0.0.0", () => {
   );
   console.log(`📏 Office radius: ${process.env.OFFICE_RADIUS}m`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`🔒 Admin panel: https://your-domain/admin-panel-${ADMIN_PANEL_ID}`);
 });
-                
